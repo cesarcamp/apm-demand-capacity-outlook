@@ -140,20 +140,7 @@ Sources: train control / APM telemetry, AODB & flight schedule, capacity plan
 
 **Governance and delivery:** endorsed semantic model, row-level security, lineage view, Git integration (PBIP/TMDL) and deployment pipelines (Dev → Test → Prod).
 
-## 9. Limitations and next steps
-
-| Limitation | Next step |
-|---|---|
-| Synthetic data, including the capacity assumption (sized so ~2 % of normal intervals saturate) | Calibrate with real telemetry and fleet plans |
-| Demand is unconstrained (no queues) | Model queueing and passenger spill |
-| Simulator covers **arrival banks only**; departure banks feed the Rental Car Center | Add the departure lead profile |
-| Direction split of the surge is an approximation; the lag profile comes from the synthetic generator | Estimate both from observed data |
-| Forecast under-estimates the 06:00–07:00 ramp-up and Rental Car Center evenings | Add time-of-day and day-type features; test gradient boosting |
-| Band coverage 77 % vs 80 % nominal | Recalibrate quantiles on more weeks |
-| "Now" is simulated; there is no live feed | Eventstream / Eventhouse path above |
-| No row-level security, CI/CD or monitoring | Standard Fabric delivery practices |
-
-## 10. Repository structure and reproduction
+## 9. Repository structure and reproduction
 
 ```
 Airport apm.pbix            Power BI report (3 pages)
@@ -170,6 +157,6 @@ apm/
 2. Open `Airport apm.pbix`, then **Home → Transform data → Manage parameters** and set `DataFolder` to the full path of `apm/data/model/` **including the trailing backslash**. Refresh. If your Windows locale uses a decimal comma, keep the `en-US` culture in the Power Query type steps of the fact tables.
 3. Validation values (no filters, champion model, Most-Likely): variance +0.84 %, WAPE 26.70 %, band coverage 77.26 %.
 
-## 11. Disclaimer
+## 10. Disclaimer
 
 Synthetic data, illustrative only. Not affiliated with, or endorsed by, any airport or operator.
