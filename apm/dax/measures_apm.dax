@@ -1,10 +1,3 @@
-// =====================================================================
-//  APM Demand Forecasting & Scenario Planning - DAX (PoC)
-//  Paste ONE measure / table at a time (Nueva medida / Nueva tabla).
-//  Not executed against the model by the author: validate in Power BI
-//  using the checks listed at the bottom of this file.
-// =====================================================================
-
 // ---------------------------------------------------------------------
 // 0. HELPER TABLES  (Modeling > New table). Keep them DISCONNECTED:
 //    after creating each one, verify there are no relationships on it.
@@ -342,7 +335,7 @@ VAR High       = [Peak Utilization Next 60 (High)]
 RETURN
     SWITCH (
         TRUE (),
-        ISBLANK ( High ),                                   "⚪ Sin datos",
+        ISBLANK ( High ),                                   "⚪ No Data",
         MostLikely >= [Threshold Critical],                 "🔴 Saturación probable",
         High >= [Threshold Critical]
             || MostLikely >= [Threshold Warning],           "🟡 Riesgo de saturación",
