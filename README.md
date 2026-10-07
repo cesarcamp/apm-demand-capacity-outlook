@@ -112,16 +112,7 @@ Example (Thu 19 Feb, Most-Likely, 36 % APM share, **+100 % on Arrival Bank 2**),
 
 The same surge does not hit every station equally, which is the point of the simulator.
 
-## 8. Data quality: issues found and fixed
-
-Validation compared Power BI against independent calculations on the CSV files. It found two defects in the data generator:
-
-1. **Locale parsing (×10):** counts written with a decimal point were read as thousands separators by a Spanish-locale Power BI. Ratios (WAPE, variance) were unaffected but absolute values were 10× too large. Fixed by setting an explicit `en-US` culture in the Power Query type step.
-2. **Station keys shifted by one in `Fact_Flight_Schedule`:** the Rental Car Center appeared to receive arrivals and the International Terminal none. Found through a sense check (the rental-car centre has no arrivals) and fixed in the generator.
-
-The lesson: a validation that compares two copies of the same wrong data passes. Add checks on meaning, not only on consistency.
-
-## 9. Microsoft Fabric / Direct Lake strategy
+## 8. Microsoft Fabric / Direct Lake strategy
 
 The PoC runs in Import mode on CSV files. The same model maps to Fabric as follows.
 
@@ -149,7 +140,7 @@ Sources: train control / APM telemetry, AODB & flight schedule, capacity plan
 
 **Governance and delivery:** endorsed semantic model, row-level security, lineage view, Git integration (PBIP/TMDL) and deployment pipelines (Dev → Test → Prod).
 
-## 10. Limitations and next steps
+## 9. Limitations and next steps
 
 | Limitation | Next step |
 |---|---|
@@ -162,7 +153,7 @@ Sources: train control / APM telemetry, AODB & flight schedule, capacity plan
 | "Now" is simulated; there is no live feed | Eventstream / Eventhouse path above |
 | No row-level security, CI/CD or monitoring | Standard Fabric delivery practices |
 
-## 11. Repository structure and reproduction
+## 10. Repository structure and reproduction
 
 ```
 Airport apm.pbix            Power BI report (3 pages)
@@ -179,6 +170,6 @@ apm/
 2. Open `Airport apm.pbix`, then **Home → Transform data → Manage parameters** and set `DataFolder` to the full path of `apm/data/model/` **including the trailing backslash**. Refresh. If your Windows locale uses a decimal comma, keep the `en-US` culture in the Power Query type steps of the fact tables.
 3. Validation values (no filters, champion model, Most-Likely): variance +0.84 %, WAPE 26.70 %, band coverage 77.26 %.
 
-## 12. Disclaimer
+## 11. Disclaimer
 
 Synthetic data, illustrative only. Not affiliated with, or endorsed by, any airport or operator.
