@@ -1,16 +1,39 @@
+// =====================================================================
+//  APM Demand Forecasting & Scenario Planning - DAX reference
+// =====================================================================
+//  Semantic model
+//    Facts      Fact_APM_Ridership, Fact_APM_Forecast, Fact_Station_Capacity, Fact_Flight_Schedule
+//    Dims       Dim_Date (daily), Dim_Time15 (96 intervals), Dim_Station, Dim_Direction,
+//               Dim_Flight_Bank, Dim_Scenario, Dim_ModelVersion
+//    Grain      date x 15-minute interval x station x direction
+//    Filters    one-to-many, single direction (dimension -> fact)
+//
+//  Conventions
+//    - Scenarios are quantiles of the forecast model: Low = P10, Most-Likely = P50, High = P90.
+//    - Utilization = demand / capacity, evaluated per interval; peaks are the maximum over intervals.
+//    - Thresholds (85 % warning, 100 % critical) are defined once and shared by every alert.
+//    - Measures that need a per-interval evaluation iterate Dim_Date x Dim_Time15 and rely on
+//      context transition. Use them at day level or below for responsive visuals.
+//    - Station-level KPIs are never totalled across stations: a system average hides local
+//      saturation. Totals are disabled on risk tables.
+//
+//  Measure folders: Base | Forecast | Variance | What-If | Alerts | Now | Dashboard
+// =====================================================================
+
+
 // ---------------------------------------------------------------------
-// 0. HELPER TABLES  (Modeling > New table). Keep them DISCONNECTED:
-//    after creating each one, verify there are no relationships on it.
+// 0. PARAMETER AND HELPER TABLES
+//    Calculated tables, intentionally disconnected from the model.
 // ---------------------------------------------------------------------
 
-// "Now" selectors: only dates that have a forecast (9-22 Feb 2026)
+// Simulated "now" selector, dates. Limited to days that have a forecast (9-22 Feb 2026).
 Now Date =
 SELECTCOLUMNS (
     FILTER ( Dim_Date, Dim_Date[IsForecastPeriod] = TRUE () ),
     "Now Date", Dim_Date[Date]
 )
 
-// column "Now Time": Sort by column -> "Now Time Key"
+// Simulated "now" selector, time of day. 'Now Time' is sorted by 'Now Time Key'.
 Now Time =
 SELECTCOLUMNS (
     Dim_Time15,
@@ -18,17 +41,17 @@ SELECTCOLUMNS (
     "Now Time",     Dim_Time15[Time_Label]
 )
 
-// What-If 1: extra passengers on the selected ARRIVAL bank(s), 0 % .. 100 %
+// What-if parameter: percentage increase in passengers of the selected arrival bank(s), 0-100 %.
 Surge Pct =
 SELECTCOLUMNS ( GENERATESERIES ( 0, 100, 5 ), "Surge %", [Value] / 100 )
 
-// What-If 2: share of arriving passengers that ride the APM (both directions)
+// What-if parameter: share of arriving passengers who ride the APM (all directions), 10-60 %.
 APM Share =
 SELECTCOLUMNS ( GENERATESERIES ( 10, 60, 2 ), "APM Share", [Value] / 100 )
 
-// Lag profile: how many intervals after landing passengers board (hide this table)
-// PoC assumption taken from the synthetic generator; in a real project it is
-// estimated by regressing boardings on lagged arrivals.
+// Boarding lag profile after landing, in 15-minute intervals (weights sum to 1.0). Hidden table.
+// Calibrated to the synthetic data generator. With production data, estimate it by regressing
+// boardings on lagged scheduled arrivals.
 Lag Kernel =
 DATATABLE (
     "Lag", INTEGER,
@@ -38,14 +61,18 @@ DATATABLE (
 
 
 // ---------------------------------------------------------------------
-// 1. BASE                                   (display folder: Base)
+// 1. BASE                                            Display folder: Base
 // ---------------------------------------------------------------------
+
+// Observed boardings. Available through 15 Feb 2026.
 Actual Pax =
 SUM ( Fact_APM_Ridership[Boardings] )
 
+// Boarding capacity offered: planned trains x boarding capacity per train.
 Capacity Pax =
 SUM ( Fact_Station_Capacity[Capacity_Pax] )
 
+// Scheduled passengers on arriving / departing flights (Dim_Flight_Bank[Movement]).
 Scheduled Arrival Pax =
 CALCULATE ( SUM ( Fact_Flight_Schedule[Scheduled_Pax] ), Dim_Flight_Bank[Movement] = "Arrival" )
 
@@ -54,10 +81,12 @@ CALCULATE ( SUM ( Fact_Flight_Schedule[Scheduled_Pax] ), Dim_Flight_Bank[Movemen
 
 
 // ---------------------------------------------------------------------
-// 2. FORECAST + 3 SCENARIOS                 (display folder: Forecast)
-//    Scenario = quantile of the model: Low P10 / Most-Likely P50 / High P90.
-//    Champion model unless ONE model is picked; Most-Likely unless ONE scenario is picked.
+// 2. FORECAST AND SCENARIOS                          Display folder: Forecast
 // ---------------------------------------------------------------------
+
+// Model resolution: the model chosen in the slicer if exactly one is selected,
+// otherwise the champion (IsChampion = TRUE). The champion lookup ignores slicer filters,
+// so selecting several non-champion models still resolves to the champion.
 Selected Model Key =
 COALESCE (
     SELECTEDVALUE ( Dim_ModelVersion[ModelVersionKey] ),
@@ -68,9 +97,12 @@ COALESCE (
     )
 )
 
+// Scenario resolution: the scenario selected in the slicer, otherwise Most-Likely (key 2).
 Selected Scenario Key =
 COALESCE ( SELECTEDVALUE ( Dim_Scenario[ScenarioKey] ), 2 )
 
+// Forecast boardings for the resolved model and scenario. Variables are evaluated before
+// CALCULATE so the filters apply to the resolved keys, not to the live slicer context.
 Forecast Pax =
 VAR ModelKey    = [Selected Model Key]
 VAR ScenarioKey = [Selected Scenario Key]
@@ -81,10 +113,12 @@ RETURN
         Dim_Scenario[ScenarioKey] = ScenarioKey
     )
 
+// Scenario-pinned forecasts, independent of the scenario slicer.
 Forecast Low  = CALCULATE ( [Forecast Pax], Dim_Scenario[ScenarioKey] = 1 )
 Forecast Most-Likely = CALCULATE ( [Forecast Pax], Dim_Scenario[ScenarioKey] = 2 )
 Forecast High = CALCULATE ( [Forecast Pax], Dim_Scenario[ScenarioKey] = 3 )
 
+// Labels for the resolved scenario and model (titles, tooltips).
 Selected Scenario Name =
 LOOKUPVALUE ( Dim_Scenario[Scenario_Name], Dim_Scenario[ScenarioKey], [Selected Scenario Key] )
 
@@ -93,29 +127,38 @@ LOOKUPVALUE ( Dim_ModelVersion[Model_Name], Dim_ModelVersion[ModelVersionKey], [
 
 
 // ---------------------------------------------------------------------
-// 3. ACTUALS vs FORECAST                    (display folder: Variance)
-//    Facts are dense (every interval x station x direction has a row), so
-//    "matched" = dates flagged as both actual and forecast (hold-out week).
+// 3. FORECAST ACCURACY                               Display folder: Variance
+//    Actuals end on 15 Feb and the forecast starts on 9 Feb, so accuracy is measured on
+//    the overlap (the hold-out week). Facts are dense (a row for every interval, station
+//    and direction), so overlap is resolved with the date flags on Dim_Date instead of
+//    iterating a grid.
 // ---------------------------------------------------------------------
+
+// Actuals and forecast restricted to the overlap period.
 Actual Pax (Matched) =
 CALCULATE ( [Actual Pax], Dim_Date[IsActualPeriod] = TRUE (), Dim_Date[IsForecastPeriod] = TRUE () )
 
 Forecast Pax (Matched) =
 CALCULATE ( [Forecast Pax], Dim_Date[IsActualPeriod] = TRUE (), Dim_Date[IsForecastPeriod] = TRUE () )
 
+// Actual - forecast, in passengers. Blank when there is no forecast to compare against.
 Variance Abs =
 VAR A = [Actual Pax (Matched)]
 VAR F = [Forecast Pax (Matched)]
 RETURN
     IF ( F <> 0, A - F )
 
+// (Actual - forecast) / forecast. Positive = model under-forecasts; negative = over-forecasts.
+// Aggregated bias: positive and negative errors offset each other. Use WAPE for error magnitude.
 Variance % =
 VAR A = [Actual Pax (Matched)]
 VAR F = [Forecast Pax (Matched)]
 RETURN
-    IF ( F <> 0, DIVIDE ( A - F, F ) )      // > 0: model under-forecasts
+    IF ( F <> 0, DIVIDE ( A - F, F ) )
 
-// Error at the 15-minute x station x direction grain (errors do not cancel out)
+// Weighted absolute percentage error: sum |actual - forecast| / sum actual, computed at the
+// native grain (15 min x station x direction) so errors do not cancel across intervals.
+// Evaluates the champion's selected scenario (Most-Likely by default).
 WAPE =
 VAR Grid =
     ADDCOLUMNS (
@@ -135,7 +178,8 @@ VAR Grid =
 RETURN
     DIVIDE ( SUMX ( Grid, ABS ( [@A] - [@F] ) ), SUMX ( Grid, [@A] ) )
 
-// Share of matched intervals where the actual fell between Low (P10) and High (P90)
+// Calibration check: share of matched intervals where the actual fell between the Low (P10)
+// and High (P90) forecasts. Nominal coverage is 80 %.
 Scenario Band Coverage % =
 VAR Grid =
     ADDCOLUMNS (
@@ -156,20 +200,39 @@ VAR Grid =
 RETURN
     DIVIDE ( COUNTROWS ( FILTER ( Grid, [@A] >= [@Lo] && [@A] <= [@Hi] ) ), COUNTROWS ( Grid ) )
 
+// Minimum matched actual passengers for a cell to report a percentage variance. Percent errors
+// on very small volumes are not meaningful (e.g. night: ~0 actual vs a few forecast passengers).
+Min Volume For Variance = 100
+
+// Variance % suppressed below the minimum volume. Used by the accuracy heat maps.
+Variance % (Min Volume) =
+VAR A = [Actual Pax (Matched)]
+RETURN
+    IF ( A >= [Min Volume For Variance], [Variance %] )
+
 
 // ---------------------------------------------------------------------
-// 4. WHAT-IF: FLIGHT-BANK SURGE             (display folder: What-If)
-//    Select ARRIVAL bank(s) in a Dim_Flight_Bank slicer; the extra boardings are the
-//    surge % of their scheduled pax, times the APM share, spread over the lag profile.
-//    Departure banks (which feed the RCC station) are Phase 2.
-//    Station-level inflow is allocated to directions by their share of the base forecast.
+// 4. FLIGHT-BANK SURGE SIMULATOR                     Display folder: What-If
+//    Extra boardings from growth in the selected ARRIVAL bank(s):
+//      surge boardings = scheduled arrival pax x surge % x APM share, spread over the lag profile
+//    Scope and approximations
+//      - Arrival banks only. Departure banks feed the Rental Car Center and are out of scope.
+//      - Station-level inflow is allocated to directions in proportion to each direction's
+//        share of the base forecast in the same interval.
+//      - Bank selection filters Fact_Flight_Schedule through Dim_Flight_Bank; with no bank
+//        selected, all arrival banks contribute.
 // ---------------------------------------------------------------------
+
 Surge % Value =
 COALESCE ( SELECTEDVALUE ( 'Surge Pct'[Surge %] ), 0 )
 
 APM Share Value =
 COALESCE ( SELECTEDVALUE ( 'APM Share'[APM Share] ), 0.36 )
 
+// Additional boardings in the current filter context. For each interval, convolves scheduled
+// arrivals of the preceding intervals with the lag profile (rolling back to the previous day
+// before midnight). Cost grows with the number of dates x intervals in context: use a single
+// date. Short-circuits to 0 when the surge is 0 %.
 Surge Boardings =
 VAR Pct   = [Surge % Value]
 VAR Share = [APM Share Value]
@@ -205,33 +268,92 @@ RETURN
         )
     )
 
+// Forecast demand plus simulated surge.
 Adjusted Demand Pax =
 [Forecast Pax] + [Surge Boardings]
 
+// Peak utilization before the surge (forecast / capacity); compare with [Peak Utilization %].
+Peak Utilization % (Base) =
+MAXX (
+    CROSSJOIN ( VALUES ( Dim_Date[Date] ), VALUES ( Dim_Time15[Time15Key] ) ),
+    DIVIDE ( [Forecast Pax], [Capacity Pax] )
+)
+
+// Saturated intervals (utilization >= critical threshold) before the surge, per row context.
+// At system level (no station/direction in context) the aggregate rarely reaches 100 %;
+// use the Station-Intervals variants below for system-wide KPI cards.
+Intervals Over Capacity (Base) =
+COUNTROWS (
+    FILTER (
+        ADDCOLUMNS (
+            CROSSJOIN ( VALUES ( Dim_Date[Date] ), VALUES ( Dim_Time15[Time15Key] ) ),
+            "@U", DIVIDE ( [Forecast Pax], [Capacity Pax] )
+        ),
+        [@U] >= [Threshold Critical]
+    )
+) + 0
+
+// System-wide KPIs: saturated intervals summed over every station and direction.
+Station-Intervals Over Capacity =
+SUMX (
+    CROSSJOIN ( VALUES ( Dim_Station[StationKey] ), VALUES ( Dim_Direction[DirectionKey] ) ),
+    [Intervals Over Capacity]
+)
+
+Station-Intervals Over Capacity (Base) =
+SUMX (
+    CROSSJOIN ( VALUES ( Dim_Station[StationKey] ), VALUES ( Dim_Direction[DirectionKey] ) ),
+    [Intervals Over Capacity (Base)]
+)
+
+// Cell colors for the simulator matrix (Format style = Field value). Same thresholds as every
+// other alert; a measure avoids the Number/Percent unit ambiguity of rule-based formatting.
+Peak Utilization Cell Color =
+VAR U = [Peak Utilization %]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( U ),             BLANK (),
+        U >= [Threshold Critical], "#C0392B",
+        U >= [Threshold Warning],  "#F1C40F",
+        BLANK ()
+    )
+
+Peak Utilization Cell Font Color =
+VAR U = [Peak Utilization %]
+RETURN
+    IF ( U >= [Threshold Critical], "#FFFFFF", "#0F0F10" )
+
 
 // ---------------------------------------------------------------------
-// 5. SATURATION ALERT                       (display folder: Alerts)
+// 5. SATURATION ALERTS                               Display folder: Alerts
 // ---------------------------------------------------------------------
+
+// Shared thresholds, as a fraction of capacity.
 Threshold Warning  = 0.85
 Threshold Critical = 1.00
 
+// Utilization of the adjusted demand (equals forecast utilization when the surge is 0 %).
 Capacity Utilization % =
 DIVIDE ( [Adjusted Demand Pax], [Capacity Pax] )
 
+// Observed utilization (actual boardings / capacity).
 Actual Utilization % =
 DIVIDE ( [Actual Pax], [Capacity Pax] )
 
+// Remaining boarding capacity; negative when demand exceeds capacity.
 Capacity Headroom Pax =
 IF ( NOT ISBLANK ( [Adjusted Demand Pax] ), [Capacity Pax] - [Adjusted Demand Pax] )
 
+// Status for the current context. Text and color are derived from the same utilization value.
 Saturation Status =
 VAR Util = [Capacity Utilization %]
 RETURN
     SWITCH (
         TRUE (),
-        ISBLANK ( Util ),             "⚪ Sin datos",
-        Util >= [Threshold Critical], "🔴 Riesgo de saturación",
-        Util >= [Threshold Warning],  "🟡 Atención",
+        ISBLANK ( Util ),             "⚪ No data",
+        Util >= [Threshold Critical], "🔴 High Risk of Saturation",
+        Util >= [Threshold Warning],  "🟡 Risk of Saturation",
         "🟢 Normal"
     )
 
@@ -246,12 +368,15 @@ RETURN
         "#27AE60"
     )
 
+// Highest utilization over the intervals in context (includes the simulated surge).
 Peak Utilization % =
 MAXX (
     CROSSJOIN ( VALUES ( Dim_Date[Date] ), VALUES ( Dim_Time15[Time15Key] ) ),
     [Capacity Utilization %]
 )
 
+// Number of intervals at or above the critical threshold (includes the simulated surge).
+// Returns 0 instead of blank so cards and tables show an explicit zero.
 Intervals Over Capacity =
 COUNTROWS (
     FILTER (
@@ -265,20 +390,26 @@ COUNTROWS (
 
 
 // ---------------------------------------------------------------------
-// 6. NEXT 60 MINUTES FROM "NOW"             (display folder: Now)
-//    Probability-aware alert: red if the Most-Likely scenario saturates,
-//    amber if only High (P90) saturates or Most-Likely is above the warning level.
+// 6. NEXT-60-MINUTE ALERTS                           Display folder: Now
+//    The window is the four 15-minute intervals after the simulated "now". Alerts are
+//    probability-aware: red when Most-Likely reaches capacity, amber when only High (P90)
+//    does or Most-Likely is above the warning level.
 // ---------------------------------------------------------------------
+
+// Simulated now: date (defaults to the first forecast day) and interval (defaults to 17:00).
 Now Date Value =
 COALESCE ( SELECTEDVALUE ( 'Now Date'[Now Date] ), MIN ( 'Now Date'[Now Date] ) )
 
 Now Slot Value =
-COALESCE ( SELECTEDVALUE ( 'Now Time'[Now Time Key] ), 68 )      // 17:00
+COALESCE ( SELECTEDVALUE ( 'Now Time'[Now Time Key] ), 68 )
 
 Now Label =
 FORMAT ( [Now Date Value], "yyyy-mm-dd" ) & " "
     & LOOKUPVALUE ( Dim_Time15[Time_Label], Dim_Time15[Time15Key], [Now Slot Value] )
 
+// Peak utilization over the next four intervals. The date/interval variables are read inside
+// the iterator because CALCULATE filter arguments cannot reference columns added by
+// ADDCOLUMNS directly. Windows that cross midnight roll into the next day.
 Peak Utilization Next 60 (Most-Likely) =
 VAR NowDate = [Now Date Value]
 VAR NowSlot = [Now Slot Value]
@@ -329,20 +460,20 @@ RETURN
             )
     )
 
+// Next-60 status label and color; both are computed from the same two peak values.
 Saturation Risk Next 60 =
 VAR MostLikely = [Peak Utilization Next 60 (Most-Likely)]
 VAR High       = [Peak Utilization Next 60 (High)]
 RETURN
     SWITCH (
         TRUE (),
-        ISBLANK ( High ),                                   "⚪ No Data",
-        MostLikely >= [Threshold Critical],                 "🔴 Saturación probable",
+        ISBLANK ( High ),                                   "⚪ No data",
+        MostLikely >= [Threshold Critical],                 "🔴 High Risk of Saturation",
         High >= [Threshold Critical]
-            || MostLikely >= [Threshold Warning],           "🟡 Riesgo de saturación",
+            || MostLikely >= [Threshold Warning],           "🟡 Risk of Saturation",
         "🟢 Normal"
     )
 
-// Same logic as the text measure, computed from the numbers (not from the emoji)
 Saturation Risk Next 60 Color =
 VAR MostLikely = [Peak Utilization Next 60 (Most-Likely)]
 VAR HighPeak   = [Peak Utilization Next 60 (High)]
@@ -356,7 +487,8 @@ RETURN
         "#27AE60"
     )
 
-// Minutes until the first interval where the High scenario reaches capacity (blank = none)
+// Minutes until the first interval where the High scenario reaches capacity; blank if it
+// does not within the window.
 Minutes To Saturation (High) =
 VAR NowDate = [Now Date Value]
 VAR NowSlot = [Now Slot Value]
@@ -385,28 +517,28 @@ VAR WinU =
 RETURN
     MINX ( FILTER ( WinU, [@U] >= [Threshold Critical] ), [Value] ) * 15
 
+// 1 when a station/direction is not green in the next 60 minutes (same rule as
+// Saturation Risk Next 60), else 0. Numeric so it does not depend on label text.
+At Risk Flag =
+IF (
+    [Peak Utilization Next 60 (High)] >= [Threshold Critical]
+        || [Peak Utilization Next 60 (Most-Likely)] >= [Threshold Warning],
+    1,
+    0
+)
 
-// =====================================================================
-//  VALIDATION CHECKS (no filters, champion model, Most-Likely scenario)
-//    Variance %  ~ +0.8 %     (model_metrics.csv: Holdout_Bias 0.0084)
-//    WAPE        ~ 26.7 %     (model_metrics.csv: Holdout_WAPE_P50 0.2670)
-//    Scenario Band Coverage % ~ 77 %
-//    Surge % = 0 -> Adjusted Demand Pax = Forecast Pax
-//    Surge % = 30 %, bank ARR4 selected, station T3 -> Adjusted Demand rises
-//    Now = 2026-02-18 10:00 (maintenance), Surge % = 0, matrix Station x Direction:
-//        Rental Car Center, Clockwise          Most-Likely 0.92   High 1.12
-//        Rental Car Center, Counter-clockwise  Most-Likely 0.98   High 1.14
-//        every other station/direction         High < 0.55
-//        (all stations aggregated is only ~0.42: always validate per station/direction)
-// =====================================================================
+// Number of stations flagged in the next 60 minutes. SUMX returns 0 when none is at risk;
+// COUNTROWS would return blank.
+Stations At Risk Next 60 =
+SUMX ( VALUES ( Dim_Station[StationKey] ), [At Risk Flag] )
 
 
 // ---------------------------------------------------------------------
-// 7. DASHBOARD HELPERS                      (display folder: Dashboard)
+// 7. DASHBOARD SUPPORT                               Display folder: Dashboard
 // ---------------------------------------------------------------------
-// NOTE: "Is Now Date" as a visual filter only works when Dim_Date is in the visual.
-// On a time-of-day axis it returns 0 for every point (MAX date = last date) and empties the chart.
-// Use the "(Now Day)" measures below instead: each one applies the Now Date itself.
+
+// "Now Day" series for time-of-day charts. A time-of-day axis carries no date context, so each
+// measure pins the simulated Now date itself instead of relying on a visual filter.
 Forecast Low (Now Day) =
 VAR d = [Now Date Value]
 RETURN
@@ -427,37 +559,16 @@ VAR d = [Now Date Value]
 RETURN
     CALCULATE ( [Capacity Pax], REMOVEFILTERS ( Dim_Date ), Dim_Date[Date] = d )
 
-// Stations that are not "green" in the next 60 minutes (numeric rule, independent of the label text)
-// 1 = not green (same rule as Saturation Risk Next 60), 0 = normal. Numeric on purpose:
-// it does not depend on the label text/language. Use as VISUAL-LEVEL filter "= 1".
-At Risk Flag =
-IF (
-    [Peak Utilization Next 60 (High)] >= [Threshold Critical]
-        || [Peak Utilization Next 60 (Most-Likely)] >= [Threshold Warning],
-    1,
-    0
-)
-
-// SUMX returns 0 (not blank) when no station is at risk; COUNTROWS would show blank
-Stations At Risk Next 60 =
-SUMX ( VALUES ( Dim_Station[StationKey] ), [At Risk Flag] )
-
-// Peak utilisation WITHOUT the what-if surge (compare with Peak Utilization %)
-Peak Utilization % (Base) =
-MAXX (
-    CROSSJOIN ( VALUES ( Dim_Date[Date] ), VALUES ( Dim_Time15[Time15Key] ) ),
-    DIVIDE ( [Forecast Pax], [Capacity Pax] )
-)
-
-// Shaded "next 60 minutes" band for the Page 1 chart: plot as a column series on a hidden
-// secondary axis (max = 1, gap width 0, light grey). Chart is already filtered with Is Now Date = 1.
+// Shaded band marking the next-60-minute window on the Page 1 chart. Plotted as a column
+// series on a hidden secondary axis (maximum 1, zero gap width).
 Next 60 Window Marker =
 VAR Slot = MAX ( Dim_Time15[Time15Key] )
 VAR NowSlot = [Now Slot Value]
 RETURN
     IF ( Slot > NowSlot && Slot <= NowSlot + 4, 1 )
 
-// Dynamic chart title (Format > Title > fx > Field value)
+// Dynamic chart titles. Page 1 reads the simulated Now date; pages 2 and 3 read the date
+// slicer of their own page.
 Chart Title Station =
 "Forecast vs capacity - "
     & IF (
@@ -467,38 +578,6 @@ Chart Title Station =
     )
     & " (" & FORMAT ( [Now Date Value], "ddd d mmm", "en-US" ) & ")"
 
-
-// ---------------------------------------------------------------------
-// 8. PAGE 2 HELPERS                         (display folder: Variance)
-// ---------------------------------------------------------------------
-// Percent errors on tiny volumes mislead (e.g. night: actual ~0, forecast a few pax -> -90 %).
-// Cells with fewer matched actual passengers than this threshold are left blank.
-Min Volume For Variance = 100
-
-Variance % (Min Volume) =
-VAR A = [Actual Pax (Matched)]
-RETURN
-    IF ( A >= [Min Volume For Variance], [Variance %] )
-
-// ---------------------------------------------------------------------
-// 9. PAGE 3 HELPERS                         (display folder: What-If)
-// ---------------------------------------------------------------------
-// Before/after companion of "Intervals Over Capacity" (which includes the what-if surge)
-Intervals Over Capacity (Base) =
-COUNTROWS (
-    FILTER (
-        ADDCOLUMNS (
-            CROSSJOIN ( VALUES ( Dim_Date[Date] ), VALUES ( Dim_Time15[Time15Key] ) ),
-            "@U", DIVIDE ( [Forecast Pax], [Capacity Pax] )
-        ),
-        [@U] >= [Threshold Critical]
-    )
-) + 0
-
-// ---------------------------------------------------------------------
-// 10. DYNAMIC TITLES FOR PAGES 2 AND 3      (display folder: Dashboard)
-//     They read the Date slicer of THAT page (not the "Now" selector).
-// ---------------------------------------------------------------------
 Chart Title Accuracy =
 VAR d = SELECTEDVALUE ( Dim_Date[Date] )
 RETURN
@@ -521,41 +600,39 @@ RETURN
         )
         & IF ( ISBLANK ( d ), "", " (" & FORMAT ( d, "ddd d mmm", "en-US" ) & ")" )
 
-// ---------------------------------------------------------------------
-// 11. SYSTEM KPIs FOR PAGE 3                (display folder: What-If)
-//     "Intervals Over Capacity" on a card is evaluated on the aggregated system
-//     (all stations together), so it can be 0 while individual stations are red.
-//     These sum the saturated intervals of each station and direction instead.
-// ---------------------------------------------------------------------
-Station-Intervals Over Capacity =
-SUMX (
-    CROSSJOIN ( VALUES ( Dim_Station[StationKey] ), VALUES ( Dim_Direction[DirectionKey] ) ),
-    [Intervals Over Capacity]
-)
 
-Station-Intervals Over Capacity (Base) =
-SUMX (
-    CROSSJOIN ( VALUES ( Dim_Station[StationKey] ), VALUES ( Dim_Direction[DirectionKey] ) ),
-    [Intervals Over Capacity (Base)]
-)
-
-// ---------------------------------------------------------------------
-// 12. CELL COLOURS FOR THE PAGE 3 MATRIX    (display folder: What-If)
-//     Use with Cell elements > Background color / Font color > Format style = Field value.
-//     Same thresholds as every alert in the report; avoids the Number/Percent unit trap of rules.
-// ---------------------------------------------------------------------
-Peak Utilization Cell Color =
-VAR U = [Peak Utilization %]
-RETURN
-    SWITCH (
-        TRUE (),
-        ISBLANK ( U ),             BLANK (),
-        U >= [Threshold Critical], "#C0392B",
-        U >= [Threshold Warning],  "#F1C40F",
-        BLANK ()
-    )
-
-Peak Utilization Cell Font Color =
-VAR U = [Peak Utilization %]
-RETURN
-    IF ( U >= [Threshold Critical], "#FFFFFF", "#0F0F10" )
+// =====================================================================
+//  REFERENCE VALUES (regression checks)
+//  Computed independently from the CSV files in apm/data/model. Champion model,
+//  Most-Likely scenario unless stated.
+//
+//  Accuracy, hold-out week 9-15 Feb, no filters
+//    Variance %                 +0.84 %
+//    WAPE                       26.70 %
+//    Scenario Band Coverage %   77.26 %
+//    Actual Pax (Matched)       108,809
+//    Variance % by day          9 Feb +1.0 | 10 Feb +6.4 | 11 Feb +6.0 | 12 Feb -20.5 (storm)
+//                               13 Feb +3.9 | 14 Feb +6.7 | 15 Feb +4.4
+//    WAPE by station            RCC 16.1 % | T1 33.0 % | T2 36.3 % | T3 29.2 % | ITB 33.9 %
+//
+//  Next-60 alerts, Surge % = 0
+//    Now 2026-02-19 10:45       RCC clockwise 106 % / 124 % (Most-Likely / High), 30 min to
+//                               saturation; RCC counter-clockwise 126 % / 141 %, 30 min;
+//                               other stations below 100 % in High; Stations At Risk = 1
+//    Now 2026-02-18 10:00       RCC clockwise 92 % / 112 %, counter-clockwise 98 % / 114 %
+//                               (reduced trains for maintenance); all stations aggregated ~42 %
+//
+//  Simulator, 2026-02-19, Most-Likely, APM share 36 %
+//    Arrival Bank 2, surge 100 %    Peak utilization, base -> adjusted
+//      T1 counter-clockwise 90 % -> 147 %      T3 clockwise 109 % -> 143 %
+//      ITB clockwise 83 % -> 117 %             T2 counter-clockwise 79 % -> 103 %
+//      RCC unchanged (no arriving flights)
+//      Surge Boardings (all stations) 1,399.32
+//      Saturated station-intervals 6 -> 17
+//    Terminal 3, Arrival Bank 4, surge 30 %    Surge Boardings 50.0
+//
+//  Invariants
+//    Surge % = 0                  Adjusted Demand Pax = Forecast Pax
+//    Rental Car Center            Never changes with the surge (no arriving flights)
+//    Selecting one station        Chart titles show the station name
+// =====================================================================
