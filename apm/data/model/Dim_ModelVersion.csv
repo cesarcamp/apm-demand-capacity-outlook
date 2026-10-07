@@ -1,0 +1,3 @@
+ModelVersionKey,Model_Name,Version,Trained_Until,IsChampion
+1,Seasonal Profile,v1,2026-02-08,False
+2,Schedule-driven Ridge,v1,2026-02-08,True

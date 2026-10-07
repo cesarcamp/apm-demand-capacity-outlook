@@ -1,0 +1,13 @@
+BankKey,Bank_Code,Bank_Name,Movement,Start_Time,End_Time
+0,OFF_ARR,Arrival off-bank,Arrival,,
+1,ARR1,Arrival Bank 1,Arrival,06:30,08:30
+2,ARR2,Arrival Bank 2,Arrival,10:30,12:00
+3,ARR3,Arrival Bank 3,Arrival,13:30,15:00
+4,ARR4,Arrival Bank 4,Arrival,17:00,19:00
+5,ARR5,Arrival Bank 5,Arrival,20:30,22:00
+10,OFF_DEP,Departure off-bank,Departure,,
+11,DEP1,Departure Bank 1,Departure,05:30,07:30
+12,DEP2,Departure Bank 2,Departure,09:30,11:00
+13,DEP3,Departure Bank 3,Departure,12:30,14:00
+14,DEP4,Departure Bank 4,Departure,16:00,18:00
+15,DEP5,Departure Bank 5,Departure,19:30,21:00

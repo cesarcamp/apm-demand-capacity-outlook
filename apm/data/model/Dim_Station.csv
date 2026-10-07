@@ -1,0 +1,6 @@
+StationKey,Station_Code,Station_Name,Station_Type,Loop_Sequence
+1,RCC,Rental Car Center,Hub,1
+2,T1,Terminal 1,Terminal,2
+3,T2,Terminal 2,Terminal,3
+4,T3,Terminal 3,Terminal,4
+5,ITB,International Terminal,Terminal,5

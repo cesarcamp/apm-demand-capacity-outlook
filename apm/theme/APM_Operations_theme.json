@@ -1,0 +1,74 @@
+{
+  "name": "APM Operations",
+  "dataColors": [
+    "#440099",
+    "#9B7FCC",
+    "#C4D451",
+    "#404040",
+    "#DACCEB",
+    "#6B7280",
+    "#2A0066",
+    "#7A8A1C"
+  ],
+  "background": "#FFFFFF",
+  "foreground": "#0F0F10",
+  "tableAccent": "#440099",
+  "good": "#27AE60",
+  "neutral": "#F1C40F",
+  "bad": "#C0392B",
+  "maximum": "#440099",
+  "center": "#FFFFFF",
+  "minimum": "#C4D451",
+  "textClasses": {
+    "callout": { "fontSize": 28, "fontFace": "Segoe UI Semibold", "color": "#0F0F10" },
+    "title": { "fontSize": 12, "fontFace": "Segoe UI Semibold", "color": "#440099" },
+    "header": { "fontSize": 11, "fontFace": "Segoe UI Semibold", "color": "#404040" },
+    "label": { "fontSize": 10, "fontFace": "Segoe UI", "color": "#404040" }
+  },
+  "visualStyles": {
+    "*": {
+      "*": {
+        "title": [
+          {
+            "fontColor": { "solid": { "color": "#440099" } },
+            "fontSize": 12,
+            "fontFamily": "Segoe UI Semibold"
+          }
+        ],
+        "background": [
+          { "color": { "solid": { "color": "#FFFFFF" } }, "transparency": 0 }
+        ],
+        "border": [
+          { "show": true, "color": { "solid": { "color": "#DACCEB" } }, "radius": 6 }
+        ]
+      }
+    },
+    "page": {
+      "*": {
+        "background": [
+          { "color": { "solid": { "color": "#F5F8FC" } }, "transparency": 0 }
+        ]
+      }
+    },
+    "pivotTable": {
+      "*": {
+        "columnHeaders": [
+          {
+            "backColor": { "solid": { "color": "#440099" } },
+            "fontColor": { "solid": { "color": "#FFFFFF" } }
+          }
+        ]
+      }
+    },
+    "tableEx": {
+      "*": {
+        "columnHeaders": [
+          {
+            "backColor": { "solid": { "color": "#440099" } },
+            "fontColor": { "solid": { "color": "#FFFFFF" } }
+          }
+        ]
+      }
+    }
+  }
+}

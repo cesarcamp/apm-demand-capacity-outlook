@@ -1,0 +1,12 @@
+# local Python environment (large, machine-specific)
+.venv/
+__pycache__/
+*.pyc
+
+# Power BI local caches
+.pbi/
+*.pbi*/
+
+# OS / editor
+.DS_Store
+Thumbs.db
