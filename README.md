@@ -30,6 +30,8 @@ An APM moves passengers between terminals and the rental-car centre. Demand arri
 | **2. Forecast Accuracy** | Where and when does the forecast fail? | Variance, WAPE and band coverage; heat maps by station × day-part and date × hour; actual vs forecast for a selected day; event-aware WAPE by day |
 | **3. What-If Simulator** | What if a flight bank grows? | Surge %, APM share, bank, scenario and date controls; before/after peak utilisation and saturated intervals per station and direction |
 
+Link to dashboard: https://app.powerbi.com/groups/me/reports/64d58d48-633b-4dd5-9145-9baaf9efd8a8/fc5f2429f21b25d71fab?experience=power-bi
+
 ## 3. Key results (hold-out week, 9–15 Feb 2026)
 
 | Metric | Value |
